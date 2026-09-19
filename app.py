@@ -129,9 +129,10 @@ with st.sidebar:
     
     st.button("🔄 Refresh Data")
 
-# --- Application Main Logic ---
+# --- Time Window Definition ---
 now = datetime.now(timezone.utc)
-period_from = (now - timedelta(days=8)).isoformat()  # Updated to last 8 days
+start_window = now - timedelta(days=8)
+period_from = start_window.isoformat()
 
 with st.spinner(f"Fetching 8 days of electricity & gas rates for Region {region_letter}..."):
     df_elec = fetch_unit_rates(elec_product_code, elec_tariff_code, "electricity", period_from)
@@ -178,7 +179,13 @@ if not df_elec.empty:
         labels={"interval_start": "Time (UTC)", "rate_p_kwh": "Unit Rate (p/kWh)"},
         color_discrete_map={"Electricity": "#00d2c6", "Gas": "#ff5a5f"}
     )
-    fig_rates.update_layout(hovermode="x unified", margin=dict(l=20, r=20, t=30, b=20))
+    
+    # Explicitly lock x-axis range to [start_window, now]
+    fig_rates.update_layout(
+        xaxis=dict(range=[start_window, now]),
+        hovermode="x unified", 
+        margin=dict(l=20, r=20, t=30, b=20)
+    )
     st.plotly_chart(fig_rates, use_container_width=True)
 
     # --- Usage & Cost Chart (If Meter Credentials Provided) ---
@@ -196,7 +203,13 @@ if not df_elec.empty:
             go.Bar(x=df_merged["interval_start"], y=df_merged["consumption_kwh"], name="Usage (kWh)", marker_color="rgba(255, 90, 95, 0.5)"),
             secondary_y=True
         )
-        fig_usage.update_layout(hovermode="x unified", margin=dict(l=20, r=20, t=30, b=20))
+        
+        # Explicitly lock x-axis range to [start_window, now]
+        fig_usage.update_layout(
+            xaxis=dict(range=[start_window, now]),
+            hovermode="x unified", 
+            margin=dict(l=20, r=20, t=30, b=20)
+        )
         st.plotly_chart(fig_usage, use_container_width=True)
 
     # --- Data Table Section ---
