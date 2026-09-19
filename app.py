@@ -7,10 +7,10 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, timezone
 
 # --- Page Setup ---
-st.set_page_config(page_title="Octopus 7-Day Tracker", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Octopus 7-Day Regional Tracker", layout="wide", page_icon="⚡")
 st.title("⚡ Octopus Energy: 7-Day Regional Rate & Usage Tracker")
 
-# --- Default Constants ---
+# --- Default Product Codes ---
 DEFAULT_ELEC_PRODUCT = "AGILE-24-10-01"  # Agile Electricity
 DEFAULT_GAS_PRODUCT = "VAR-22-11-01"     # Flexible Gas (or SILVER-24-10-01 for Tracker)
 
@@ -48,7 +48,7 @@ def fetch_unit_rates(product_code: str, tariff_code: str, fuel_type: str, period
             res.raise_for_status()
             data = res.json()
             all_results.extend(data.get("results", []))
-            url = data.get("next")  # Handles API pagination
+            url = data.get("next")  # Pagination handling
             params = None  
             
         if not all_results:
@@ -88,40 +88,52 @@ def fetch_consumption(api_key: str, mpan: str, serial_number: str, period_from: 
         st.error(f"Error fetching consumption: {e}")
         return pd.DataFrame()
 
-# --- Sidebar Configuration (Variables defined here first) ---
+# --- Sidebar Inputs ---
 with st.sidebar:
-    st.header("📍 Location & Tariff")
-    postcode_input = st.text_input("UK Postcode", value="AL1 3UU", help="Used to automatically detect your DNO regional tariff group")
+    st.header("📍 Location & Regional Tariff")
     
+    # 1. Location Input
+    postcode_input = st.text_input(
+        "UK Postcode", 
+        value="AL1 3UU", 
+        help="Used to dynamically query your DNO regional tariff group (e.g., Region A, C, H)"
+    )
+    
+    # Resolve region code automatically from postcode
+    region_letter = get_region_code_from_postcode(postcode_input)
+    st.success(f"Detected Location Region: **Region {region_letter}**")
+    
+    st.divider()
+    
+    # 2. Tariff Product Inputs
+    st.header("⚙️ Fuel Products")
     col_prod1, col_prod2 = st.columns(2)
     with col_prod1:
         elec_product_code = st.text_input("Elec Product", value=DEFAULT_ELEC_PRODUCT)
     with col_prod2:
         gas_product_code = st.text_input("Gas Product", value=DEFAULT_GAS_PRODUCT)
     
-    # Automatically determine region letter from postcode
-    region_letter = get_region_code_from_postcode(postcode_input)
-    st.info(f"Detected Tariff Region: **Region {region_letter}**")
-    
-    # Dynamic regional tariff codes per fuel product
+    # Build regional tariff strings
     elec_tariff_code = f"E-1R-{elec_product_code}-{region_letter}"
     gas_tariff_code = f"G-1R-{gas_product_code}-{region_letter}"
     
     show_vat = st.checkbox("Include VAT (5%)", value=True)
     
     st.divider()
+    
+    # 3. Optional Account Meter Credentials
     st.header("🔑 Meter Credentials (Optional)")
-    api_key = st.text_input("API Key", type="password", help="Leave blank if you only want unit rates")
+    api_key = st.text_input("API Key", type="password", help="Found under Octopus Developer Settings")
     mpan = st.text_input("Electricity MPAN")
     serial_number = st.text_input("Meter Serial Number")
     
     st.button("🔄 Refresh Data")
 
-# --- App Execution ---
+# --- Application Main Logic ---
 now = datetime.now(timezone.utc)
 period_from = (now - timedelta(days=7)).isoformat()
 
-with st.spinner("Fetching 7 days of electricity and gas rates..."):
+with st.spinner(f"Fetching 7 days of electricity & gas rates for Region {region_letter}..."):
     df_elec = fetch_unit_rates(elec_product_code, elec_tariff_code, "electricity", period_from)
     df_gas = fetch_unit_rates(gas_product_code, gas_tariff_code, "gas", period_from)
 
@@ -135,7 +147,7 @@ rate_col = "value_inc_vat" if show_vat else "value_exc_vat"
 if not df_elec.empty:
     df_elec["rate_p_kwh"] = df_elec[rate_col]
     
-    # Metric KPI Summaries
+    # Top KPI Bar
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Elec Rate", f"{df_elec['rate_p_kwh'].iloc[-1]:.2f} p/kWh")
     col2.metric("7-Day Avg Rate", f"{df_elec['rate_p_kwh'].mean():.2f} p/kWh")
@@ -145,7 +157,7 @@ if not df_elec.empty:
     st.markdown("---")
 
     # --- Trend Chart Section ---
-    st.subheader("📈 7-Day Electricity & Gas Unit Rates")
+    st.subheader(f"📈 7-Day Electricity & Gas Rates ({postcode_input.upper()} - Region {region_letter})")
     
     combined_data = []
     df_elec["Fuel"] = "Electricity"
@@ -169,7 +181,7 @@ if not df_elec.empty:
     fig_rates.update_layout(hovermode="x unified", margin=dict(l=20, r=20, t=30, b=20))
     st.plotly_chart(fig_rates, use_container_width=True)
 
-    # --- Usage & Cost Chart (If meter info provided) ---
+    # --- Usage & Cost Chart (If Meter Credentials Provided) ---
     if not df_usage.empty:
         st.subheader("📊 7-Day Electricity Usage vs. Unit Rate")
         df_merged = pd.merge(df_elec, df_usage, on="interval_start", how="inner")
@@ -188,7 +200,7 @@ if not df_elec.empty:
         st.plotly_chart(fig_usage, use_container_width=True)
 
     # --- Data Table Section ---
-    st.subheader("📋 Raw Data (Last 7 Days)")
+    st.subheader("📋 Raw Rate Breakdown")
     display_df = df_rates_combined[["Fuel", "interval_start", "rate_p_kwh"]].copy()
     display_df.columns = ["Fuel Type", "Interval Start (UTC)", "Rate (p/kWh)"]
     display_df["Interval Start (UTC)"] = display_df["Interval Start (UTC)"].dt.strftime("%Y-%m-%d %H:%M")
@@ -196,4 +208,4 @@ if not df_elec.empty:
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 else:
-    st.warning("No electricity rate data returned. Check your electricity product code and postcode.")
+    st.warning("No rate data returned. Please verify your postcode and electricity product code.")
