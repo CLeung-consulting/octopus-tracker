@@ -1,176 +1,195 @@
 import streamlit as st
 import requests
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, timezone
 
 # --- Page Setup ---
-st.set_page_config(page_title="Octopus 24h Tracker", layout="wide", page_icon="⚡")
-st.title("⚡ Octopus Energy: 24h Rates & Consumption Tracker")
+st.set_page_config(page_title="Octopus 7-Day Tracker", layout="wide", page_icon="⚡")
+st.title("⚡ Octopus Energy: 7-Day Regional Rate & Usage Tracker")
 
 # --- Default Constants ---
-DEFAULT_PRODUCT = "AGILE-24-10-01"
-DEFAULT_ELEC_TARIFF = f"E-1R-{DEFAULT_PRODUCT}-A"
-
-# --- Sidebar Configuration ---
-with st.sidebar:
-    st.header("🔑 Credentials & Settings")
-    st.markdown("Get these details from your **Octopus Online Account** page.")
-    
-    api_key = st.text_input("Octopus API Key", type="password", help="Found under Account Settings -> Developer Details")
-    mpan = st.text_input("Electricity MPAN", help="21-digit Electricity Meter Point Administration Number")
-    serial_number = st.text_input("Meter Serial Number", help="Found on your physical meter or bill")
-    
-    st.divider()
-    st.header("⚙️ Tariff Settings")
-    product_code = st.text_input("Product Code", value=DEFAULT_PRODUCT)
-    elec_tariff_code = st.text_input("Electricity Tariff Code", value=DEFAULT_ELEC_TARIFF)
-    show_vat = st.checkbox("Include VAT (5%)", value=True)
-    
-    refresh_button = st.button("🔄 Refresh Data")
+DEFAULT_PRODUCT = "AGILE-24-10-01"  # Agile Octopus product code
 
 # --- Helper Functions ---
-@st.cache_data(ttl=900)
-def fetch_unit_rates(product_code: str, tariff_code: str, period_from: str) -> pd.DataFrame:
-    """Fetch public electricity unit rates from Octopus REST API."""
-    url = f"https://api.octopus.energy/v1/products/{product_code}/electricity-tariffs/{tariff_code}/standard-unit-rates/"
-    params = {"period_from": period_from, "page_size": 100}
+@st.cache_data(ttl=3600)
+def get_region_code_from_postcode(postcode: str) -> str:
+    """Lookup Octopus Grid Supply Point (GSP) region code (e.g., 'A', 'C', 'H') from UK Postcode."""
+    if not postcode.strip():
+        return "A"  # Default fallback
+    
+    formatted_postcode = postcode.strip().replace(" ", "").upper()
+    url = f"https://api.octopus.energy/v1/industry/grid-supply-points/?postcode={formatted_postcode}"
     
     try:
-        res = requests.get(url, params=params, timeout=10)
+        res = requests.get(url, timeout=5)
         res.raise_for_status()
         results = res.json().get("results", [])
-        if not results:
+        if results:
+            # GSP group code usually looks like '_A', '_C'. We strip '_' to get 'A', 'C'
+            group_id = results[0].get("group_id", "_A")
+            return group_id.replace("_", "")
+    except Exception as e:
+        st.warning(f"Could not resolve region for postcode '{postcode}'. Defaulting to region 'A'. Error: {e}")
+    return "A"
+
+@st.cache_data(ttl=900)
+def fetch_unit_rates(product_code: str, tariff_code: str, fuel_type: str, period_from: str) -> pd.DataFrame:
+    """Fetch 7 days of unit rates with pagination from public REST API."""
+    url = f"https://api.octopus.energy/v1/products/{product_code}/{fuel_type}-tariffs/{tariff_code}/standard-unit-rates/"
+    params = {"period_from": period_from, "page_size": 1500}
+    
+    all_results = []
+    try:
+        while url:
+            res = requests.get(url, params=params, timeout=10)
+            res.raise_for_status()
+            data = res.json()
+            all_results.extend(data.get("results", []))
+            url = data.get("next")  # Pagination
+            params = None  # Params are encoded in the 'next' URL
+            
+        if not all_results:
             return pd.DataFrame()
         
-        df = pd.DataFrame(results)
+        df = pd.DataFrame(all_results)
         df["interval_start"] = pd.to_datetime(df["valid_from"], utc=True)
         return df.sort_values("interval_start").reset_index(drop=True)
     except Exception as e:
-        st.error(f"Error fetching unit rates: {e}")
+        st.error(f"Error fetching {fuel_type} rates: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=900)
 def fetch_consumption(api_key: str, mpan: str, serial_number: str, period_from: str) -> pd.DataFrame:
-    """Fetch private half-hourly consumption data using HTTP Basic Auth."""
+    """Fetch 7 days of electricity consumption using Basic Auth."""
     url = f"https://api.octopus.energy/v1/electricity-meter-points/{mpan}/meters/{serial_number}/consumption/"
-    params = {"period_from": period_from, "page_size": 100, "order_by": "period"}
+    params = {"period_from": period_from, "page_size": 1500, "order_by": "period"}
     
+    all_results = []
     try:
-        # Octopus API uses API key as the username with no password
-        res = requests.get(url, params=params, auth=(api_key, ""), timeout=10)
-        res.raise_for_status()
-        results = res.json().get("results", [])
-        if not results:
+        while url:
+            res = requests.get(url, params=params, auth=(api_key, ""), timeout=10)
+            res.raise_for_status()
+            data = res.json()
+            all_results.extend(data.get("results", []))
+            url = data.get("next")
+            params = None
+            
+        if not all_results:
             return pd.DataFrame()
         
-        df = pd.DataFrame(results)
+        df = pd.DataFrame(all_results)
         df["interval_start"] = pd.to_datetime(df["interval_start"], utc=True)
         df["consumption_kwh"] = df["consumption"].astype(float)
         return df.sort_values("interval_start").reset_index(drop=True)
     except Exception as e:
-        st.error(f"Error fetching consumption data: {e}")
+        st.error(f"Error fetching consumption: {e}")
         return pd.DataFrame()
 
-# --- App Logic ---
+# --- Sidebar Configuration ---
+with st.sidebar:
+    st.header("📍 Location & Tariff")
+    postcode_input = st.text_input("UK Postcode", value="AL1 3UU", help="Used to automatically detect your DNO regional tariff group")
+    product_code = st.text_input("Product Code", value=DEFAULT_PRODUCT)
+    
+    # Automatically determine region letter from postcode
+    region_letter = get_region_code_from_postcode(postcode_input)
+    st.info(f"Detected Tariff Region: **Region {region_letter}**")
+    
+    # Generate dynamic regional tariff codes
+    elec_tariff_code = f"E-1R-{product_code}-{region_letter}"
+    gas_tariff_code = f"G-1R-{product_code}-{region_letter}"
+    
+    show_vat = st.checkbox("Include VAT (5%)", value=True)
+    
+    st.divider()
+    st.header("🔑 Meter Credentials (Optional)")
+    api_key = st.text_input("API Key", type="password")
+    mpan = st.text_input("Electricity MPAN")
+    serial_number = st.text_input("Meter Serial Number")
+    
+    st.button("🔄 Refresh Data")
+
+# --- App Logic & Execution ---
 now = datetime.now(timezone.utc)
-period_from = (now - timedelta(hours=24)).isoformat()
+period_from = (now - timedelta(days=7)).isoformat()
 
-# Fetch Unit Rates (Public)
-df_rates = fetch_unit_rates(product_code, elec_tariff_code, period_from)
+with st.spinner("Fetching 7 days of electricity and gas rates..."):
+    df_elec = fetch_unit_rates(product_code, elec_tariff_code, "electricity", period_from)
+    df_gas = fetch_unit_rates(product_code, gas_tariff_code, "gas", period_from)
 
-# Fetch Consumption (Private)
 df_usage = pd.DataFrame()
 if api_key and mpan and serial_number:
-    with st.spinner("Fetching meter consumption data..."):
+    with st.spinner("Fetching 7 days of consumption data..."):
         df_usage = fetch_consumption(api_key, mpan, serial_number, period_from)
-else:
-    st.info("💡 Enter your API Key, MPAN, and Serial Number in the sidebar to display meter consumption.")
 
-if not df_rates.empty:
-    rate_col = "value_inc_vat" if show_vat else "value_exc_vat"
-    df_rates["rate_p_kwh"] = df_rates[rate_col]
+rate_col = "value_inc_vat" if show_vat else "value_exc_vat"
 
-    # --- Data Merging & Cost Calculation ---
-    if not df_usage.empty:
-        # Merge consumption and rate data on matching 30-minute intervals
-        df_merged = pd.merge(df_rates, df_usage, on="interval_start", how="inner")
-        df_merged["est_cost_p"] = df_merged["consumption_kwh"] * df_merged["rate_p_kwh"]
-    else:
-        df_merged = df_rates
-
-    # --- KPI Metrics Row ---
-    col1, col2, col3, col4 = st.columns(4)
-    current_rate = df_rates["rate_p_kwh"].iloc[-1]
-    col1.metric("Latest Rate", f"{current_rate:.2f} p/kWh")
-    col2.metric("24h Max Rate", f"{df_rates['rate_p_kwh'].max():.2f} p/kWh")
+if not df_elec.empty:
+    df_elec["rate_p_kwh"] = df_elec[rate_col]
     
-    if not df_usage.empty:
-        total_kwh = df_merged["consumption_kwh"].sum()
-        total_cost_gbp = (df_merged["est_cost_p"].sum()) / 100
-        col3.metric("Total Usage (24h)", f"{total_kwh:.2f} kWh")
-        col4.metric("Est. Energy Cost", f"£{total_cost_gbp:.2f}")
-
+    # Summary Cards
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Current Elec Rate", f"{df_elec['rate_p_kwh'].iloc[-1]:.2f} p/kWh")
+    col2.metric("7-Day Avg Rate", f"{df_elec['rate_p_kwh'].mean():.2f} p/kWh")
+    col3.metric("7-Day Min Rate", f"{df_elec['rate_p_kwh'].min():.2f} p/kWh")
+    col4.metric("7-Day Max Rate", f"{df_elec['rate_p_kwh'].max():.2f} p/kWh")
+    
     st.markdown("---")
 
-    # --- Dual-Axis Trend Chart ---
-    st.subheader("📈 24-Hour Rates vs. Usage Trend")
+    # --- Trend Chart Section ---
+    st.subheader("📈 7-Day Electricity & Gas Unit Rates")
+    
+    combined_data = []
+    df_elec["Fuel"] = "Electricity"
+    combined_data.append(df_elec)
+    
+    if not df_gas.empty:
+        df_gas["rate_p_kwh"] = df_gas[rate_col]
+        df_gas["Fuel"] = "Gas"
+        combined_data.append(df_gas)
+        
+    df_rates_combined = pd.concat(combined_data, ignore_index=True)
 
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-    # Line Chart: Unit Rate
-    fig.add_trace(
-        go.Scatter(
-            x=df_rates["interval_start"],
-            y=df_rates["rate_p_kwh"],
-            name="Unit Rate (p/kWh)",
-            line=dict(color="#00d2c6", width=3),
-            mode="lines+markers"
-        ),
-        secondary_y=False
+    # Plot Unit Rates over 7 days
+    fig_rates = px.line(
+        df_rates_combined,
+        x="interval_start",
+        y="rate_p_kwh",
+        color="Fuel",
+        labels={"interval_start": "Time (UTC)", "rate_p_kwh": "Unit Rate (p/kWh)"},
+        color_discrete_map={"Electricity": "#00d2c6", "Gas": "#ff5a5f"}
     )
+    fig_rates.update_layout(hovermode="x unified", margin=dict(l=20, r=20, t=30, b=20))
+    st.plotly_chart(fig_rates, use_container_width=True)
 
-    # Bar Chart: Consumption
+    # --- Usage & Cost Chart (If meter info provided) ---
     if not df_usage.empty:
-        fig.add_trace(
-            go.Bar(
-                x=df_merged["interval_start"],
-                y=df_merged["consumption_kwh"],
-                name="Consumption (kWh)",
-                marker_color="rgba(255, 90, 95, 0.6)",
-            ),
+        st.subheader("📊 7-Day Electricity Usage vs. Unit Rate")
+        df_merged = pd.merge(df_elec, df_usage, on="interval_start", how="inner")
+        df_merged["est_cost_p"] = df_merged["consumption_kwh"] * df_merged["rate_p_kwh"]
+
+        fig_usage = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_usage.add_trace(
+            go.Scatter(x=df_merged["interval_start"], y=df_merged["rate_p_kwh"], name="Rate (p/kWh)", line=dict(color="#00d2c6")),
+            secondary_y=False
+        )
+        fig_usage.add_trace(
+            go.Bar(x=df_merged["interval_start"], y=df_merged["consumption_kwh"], name="Usage (kWh)", marker_color="rgba(255, 90, 95, 0.5)"),
             secondary_y=True
         )
+        fig_usage.update_layout(hovermode="x unified", margin=dict(l=20, r=20, t=30, b=20))
+        st.plotly_chart(fig_usage, use_container_width=True)
 
-    # Chart Layout Config
-    fig.update_layout(
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=40, b=20),
-        xaxis_title="Time"
-    )
+    # --- Data Table Section ---
+    st.subheader("📋 Raw Data (Last 7 Days)")
+    display_df = df_rates_combined[["Fuel", "interval_start", "rate_p_kwh"]].copy()
+    display_df.columns = ["Fuel Type", "Interval Start (UTC)", "Rate (p/kWh)"]
+    display_df["Interval Start (UTC)"] = display_df["Interval Start (UTC)"].dt.strftime("%Y-%m-%d %H:%M")
     
-    fig.update_yaxes(title_text=f"Rate (p/kWh {'inc VAT' if show_vat else 'exc VAT'})", secondary_y=False)
-    if not df_usage.empty:
-        fig.update_yaxes(title_text="Usage (kWh)", secondary_y=True)
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- Detailed Table Section ---
-    st.subheader("📋 Half-Hourly Data Breakdowns")
-    
-    if not df_usage.empty:
-        table_df = df_merged[["interval_start", "rate_p_kwh", "consumption_kwh", "est_cost_p"]].copy()
-        table_df.columns = ["Interval Start", "Rate (p/kWh)", "Usage (kWh)", "Cost (Pence)"]
-        table_df["Cost (Pence)"] = table_df["Cost (Pence)"].round(2)
-    else:
-        table_df = df_rates[["interval_start", "rate_p_kwh"]].copy()
-        table_df.columns = ["Interval Start", "Rate (p/kWh)"]
-        
-    table_df["Interval Start"] = table_df["Interval Start"].dt.strftime("%Y-%m-%d %H:%M UTC")
-    
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 else:
-    st.warning("No rate data received. Please verify product code and tariff settings.")
+    st.warning("No rate data returned. Please verify your postcode and product code.")
