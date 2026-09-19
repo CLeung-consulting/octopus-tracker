@@ -7,8 +7,8 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, timezone
 
 # --- Page Setup ---
-st.set_page_config(page_title="Octopus 7-Day Regional Tracker", layout="wide", page_icon="⚡")
-st.title("⚡ Octopus Energy: 7-Day Regional Rate & Usage Tracker")
+st.set_page_config(page_title="Octopus 8-Day Regional Tracker", layout="wide", page_icon="⚡")
+st.title("⚡ Octopus Energy: 8-Day Regional Rate & Usage Tracker")
 
 # --- Default Product Codes ---
 DEFAULT_ELEC_PRODUCT = "AGILE-24-10-01"  # Agile Electricity
@@ -37,7 +37,7 @@ def get_region_code_from_postcode(postcode: str) -> str:
 
 @st.cache_data(ttl=900)
 def fetch_unit_rates(product_code: str, tariff_code: str, fuel_type: str, period_from: str) -> pd.DataFrame:
-    """Fetch 7 days of unit rates with pagination from public REST API."""
+    """Fetch unit rates with pagination from public REST API."""
     url = f"https://api.octopus.energy/v1/products/{product_code}/{fuel_type}-tariffs/{tariff_code}/standard-unit-rates/"
     params = {"period_from": period_from, "page_size": 1500}
     
@@ -63,7 +63,7 @@ def fetch_unit_rates(product_code: str, tariff_code: str, fuel_type: str, period
 
 @st.cache_data(ttl=900)
 def fetch_consumption(api_key: str, mpan: str, serial_number: str, period_from: str) -> pd.DataFrame:
-    """Fetch 7 days of electricity consumption using Basic Auth."""
+    """Fetch electricity consumption using Basic Auth."""
     url = f"https://api.octopus.energy/v1/electricity-meter-points/{mpan}/meters/{serial_number}/consumption/"
     params = {"period_from": period_from, "page_size": 1500, "order_by": "period"}
     
@@ -92,7 +92,7 @@ def fetch_consumption(api_key: str, mpan: str, serial_number: str, period_from: 
 with st.sidebar:
     st.header("📍 Location & Regional Tariff")
     
-    # 1. Location Input
+    # Location Input
     postcode_input = st.text_input(
         "UK Postcode", 
         value="AL1 3UU", 
@@ -105,7 +105,7 @@ with st.sidebar:
     
     st.divider()
     
-    # 2. Tariff Product Inputs
+    # Tariff Product Inputs
     st.header("⚙️ Fuel Products")
     col_prod1, col_prod2 = st.columns(2)
     with col_prod1:
@@ -121,7 +121,7 @@ with st.sidebar:
     
     st.divider()
     
-    # 3. Optional Account Meter Credentials
+    # Optional Account Meter Credentials
     st.header("🔑 Meter Credentials (Optional)")
     api_key = st.text_input("API Key", type="password", help="Found under Octopus Developer Settings")
     mpan = st.text_input("Electricity MPAN")
@@ -131,15 +131,15 @@ with st.sidebar:
 
 # --- Application Main Logic ---
 now = datetime.now(timezone.utc)
-period_from = (now - timedelta(days=7)).isoformat()
+period_from = (now - timedelta(days=8)).isoformat()  # Updated to last 8 days
 
-with st.spinner(f"Fetching 7 days of electricity & gas rates for Region {region_letter}..."):
+with st.spinner(f"Fetching 8 days of electricity & gas rates for Region {region_letter}..."):
     df_elec = fetch_unit_rates(elec_product_code, elec_tariff_code, "electricity", period_from)
     df_gas = fetch_unit_rates(gas_product_code, gas_tariff_code, "gas", period_from)
 
 df_usage = pd.DataFrame()
 if api_key and mpan and serial_number:
-    with st.spinner("Fetching 7 days of consumption data..."):
+    with st.spinner("Fetching 8 days of consumption data..."):
         df_usage = fetch_consumption(api_key, mpan, serial_number, period_from)
 
 rate_col = "value_inc_vat" if show_vat else "value_exc_vat"
@@ -150,14 +150,14 @@ if not df_elec.empty:
     # Top KPI Bar
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Elec Rate", f"{df_elec['rate_p_kwh'].iloc[-1]:.2f} p/kWh")
-    col2.metric("7-Day Avg Rate", f"{df_elec['rate_p_kwh'].mean():.2f} p/kWh")
-    col3.metric("7-Day Min Rate", f"{df_elec['rate_p_kwh'].min():.2f} p/kWh")
-    col4.metric("7-Day Max Rate", f"{df_elec['rate_p_kwh'].max():.2f} p/kWh")
+    col2.metric("8-Day Avg Rate", f"{df_elec['rate_p_kwh'].mean():.2f} p/kWh")
+    col3.metric("8-Day Min Rate", f"{df_elec['rate_p_kwh'].min():.2f} p/kWh")
+    col4.metric("8-Day Max Rate", f"{df_elec['rate_p_kwh'].max():.2f} p/kWh")
     
     st.markdown("---")
 
     # --- Trend Chart Section ---
-    st.subheader(f"📈 7-Day Electricity & Gas Rates ({postcode_input.upper()} - Region {region_letter})")
+    st.subheader(f"📈 8-Day Electricity & Gas Rates ({postcode_input.upper()} - Region {region_letter})")
     
     combined_data = []
     df_elec["Fuel"] = "Electricity"
@@ -183,7 +183,7 @@ if not df_elec.empty:
 
     # --- Usage & Cost Chart (If Meter Credentials Provided) ---
     if not df_usage.empty:
-        st.subheader("📊 7-Day Electricity Usage vs. Unit Rate")
+        st.subheader("📊 8-Day Electricity Usage vs. Unit Rate")
         df_merged = pd.merge(df_elec, df_usage, on="interval_start", how="inner")
         df_merged["est_cost_p"] = df_merged["consumption_kwh"] * df_merged["rate_p_kwh"]
 
@@ -200,7 +200,7 @@ if not df_elec.empty:
         st.plotly_chart(fig_usage, use_container_width=True)
 
     # --- Data Table Section ---
-    st.subheader("📋 Raw Rate Breakdown")
+    st.subheader("📋 Raw Rate Breakdown (Last 8 Days)")
     display_df = df_rates_combined[["Fuel", "interval_start", "rate_p_kwh"]].copy()
     display_df.columns = ["Fuel Type", "Interval Start (UTC)", "Rate (p/kWh)"]
     display_df["Interval Start (UTC)"] = display_df["Interval Start (UTC)"].dt.strftime("%Y-%m-%d %H:%M")
