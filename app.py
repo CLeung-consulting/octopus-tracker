@@ -12,7 +12,7 @@ st.title("⚡ Octopus Energy: 7-Day Regional Rate & Usage Tracker")
 
 # --- Default Constants ---
 DEFAULT_ELEC_PRODUCT = "AGILE-24-10-01"  # Agile Electricity
-DEFAULT_GAS_PRODUCT = "VAR-22-11-01"    # Flexible Gas (or SILVER-24-10-01 for Tracker)
+DEFAULT_GAS_PRODUCT = "VAR-22-11-01"     # Flexible Gas (or SILVER-24-10-01 for Tracker)
 
 # --- Helper Functions ---
 @st.cache_data(ttl=3600)
@@ -29,7 +29,6 @@ def get_region_code_from_postcode(postcode: str) -> str:
         res.raise_for_status()
         results = res.json().get("results", [])
         if results:
-            # GSP group code usually looks like '_A', '_C'. We strip '_' to get 'A', 'C'
             group_id = results[0].get("group_id", "_A")
             return group_id.replace("_", "")
     except Exception as e:
@@ -49,8 +48,8 @@ def fetch_unit_rates(product_code: str, tariff_code: str, fuel_type: str, period
             res.raise_for_status()
             data = res.json()
             all_results.extend(data.get("results", []))
-            url = data.get("next")  # Pagination
-            params = None  # Params are encoded in the 'next' URL
+            url = data.get("next")  # Handles API pagination
+            params = None  
             
         if not all_results:
             return pd.DataFrame()
@@ -59,7 +58,7 @@ def fetch_unit_rates(product_code: str, tariff_code: str, fuel_type: str, period
         df["interval_start"] = pd.to_datetime(df["valid_from"], utc=True)
         return df.sort_values("interval_start").reset_index(drop=True)
     except Exception as e:
-        st.error(f"Error fetching {fuel_type} rates: {e}")
+        st.error(f"Error fetching {fuel_type} rates ({tariff_code}): {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=900)
@@ -89,7 +88,7 @@ def fetch_consumption(api_key: str, mpan: str, serial_number: str, period_from: 
         st.error(f"Error fetching consumption: {e}")
         return pd.DataFrame()
 
-# --- Sidebar Configuration ---
+# --- Sidebar Configuration (Variables defined here first) ---
 with st.sidebar:
     st.header("📍 Location & Tariff")
     postcode_input = st.text_input("UK Postcode", value="AL1 3UU", help="Used to automatically detect your DNO regional tariff group")
@@ -104,19 +103,25 @@ with st.sidebar:
     region_letter = get_region_code_from_postcode(postcode_input)
     st.info(f"Detected Tariff Region: **Region {region_letter}**")
     
-    # Generate dynamic regional tariff codes per fuel product
+    # Dynamic regional tariff codes per fuel product
     elec_tariff_code = f"E-1R-{elec_product_code}-{region_letter}"
     gas_tariff_code = f"G-1R-{gas_product_code}-{region_letter}"
     
     show_vat = st.checkbox("Include VAT (5%)", value=True)
+    
+    st.divider()
+    st.header("🔑 Meter Credentials (Optional)")
+    api_key = st.text_input("API Key", type="password", help="Leave blank if you only want unit rates")
+    mpan = st.text_input("Electricity MPAN")
+    serial_number = st.text_input("Meter Serial Number")
+    
     st.button("🔄 Refresh Data")
 
-# --- App Logic & Execution ---
+# --- App Execution ---
 now = datetime.now(timezone.utc)
 period_from = (now - timedelta(days=7)).isoformat()
 
 with st.spinner("Fetching 7 days of electricity and gas rates..."):
-    # Pass individual product codes for electricity and gas
     df_elec = fetch_unit_rates(elec_product_code, elec_tariff_code, "electricity", period_from)
     df_gas = fetch_unit_rates(gas_product_code, gas_tariff_code, "gas", period_from)
 
@@ -130,7 +135,7 @@ rate_col = "value_inc_vat" if show_vat else "value_exc_vat"
 if not df_elec.empty:
     df_elec["rate_p_kwh"] = df_elec[rate_col]
     
-    # Summary Cards
+    # Metric KPI Summaries
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Elec Rate", f"{df_elec['rate_p_kwh'].iloc[-1]:.2f} p/kWh")
     col2.metric("7-Day Avg Rate", f"{df_elec['rate_p_kwh'].mean():.2f} p/kWh")
@@ -153,7 +158,6 @@ if not df_elec.empty:
         
     df_rates_combined = pd.concat(combined_data, ignore_index=True)
 
-    # Plot Unit Rates over 7 days
     fig_rates = px.line(
         df_rates_combined,
         x="interval_start",
@@ -192,4 +196,4 @@ if not df_elec.empty:
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 else:
-    st.warning("No rate data returned. Please verify your postcode and product code.")
+    st.warning("No electricity rate data returned. Check your electricity product code and postcode.")
