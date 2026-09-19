@@ -11,7 +11,8 @@ st.set_page_config(page_title="Octopus 7-Day Tracker", layout="wide", page_icon=
 st.title("⚡ Octopus Energy: 7-Day Regional Rate & Usage Tracker")
 
 # --- Default Constants ---
-DEFAULT_PRODUCT = "AGILE-24-10-01"  # Agile Octopus product code
+DEFAULT_ELEC_PRODUCT = "AGILE-24-10-01"  # Agile Electricity
+DEFAULT_GAS_PRODUCT = "VAR-22-11-01"    # Flexible Gas (or SILVER-24-10-01 for Tracker)
 
 # --- Helper Functions ---
 @st.cache_data(ttl=3600)
@@ -92,24 +93,22 @@ def fetch_consumption(api_key: str, mpan: str, serial_number: str, period_from: 
 with st.sidebar:
     st.header("📍 Location & Tariff")
     postcode_input = st.text_input("UK Postcode", value="AL1 3UU", help="Used to automatically detect your DNO regional tariff group")
-    product_code = st.text_input("Product Code", value=DEFAULT_PRODUCT)
+    
+    col_prod1, col_prod2 = st.columns(2)
+    with col_prod1:
+        elec_product_code = st.text_input("Elec Product", value=DEFAULT_ELEC_PRODUCT)
+    with col_prod2:
+        gas_product_code = st.text_input("Gas Product", value=DEFAULT_GAS_PRODUCT)
     
     # Automatically determine region letter from postcode
     region_letter = get_region_code_from_postcode(postcode_input)
     st.info(f"Detected Tariff Region: **Region {region_letter}**")
     
-    # Generate dynamic regional tariff codes
-    elec_tariff_code = f"E-1R-{product_code}-{region_letter}"
-    gas_tariff_code = f"G-1R-{product_code}-{region_letter}"
+    # Generate dynamic regional tariff codes per fuel product
+    elec_tariff_code = f"E-1R-{elec_product_code}-{region_letter}"
+    gas_tariff_code = f"G-1R-{gas_product_code}-{region_letter}"
     
     show_vat = st.checkbox("Include VAT (5%)", value=True)
-    
-    st.divider()
-    st.header("🔑 Meter Credentials (Optional)")
-    api_key = st.text_input("API Key", type="password")
-    mpan = st.text_input("Electricity MPAN")
-    serial_number = st.text_input("Meter Serial Number")
-    
     st.button("🔄 Refresh Data")
 
 # --- App Logic & Execution ---
@@ -117,8 +116,9 @@ now = datetime.now(timezone.utc)
 period_from = (now - timedelta(days=7)).isoformat()
 
 with st.spinner("Fetching 7 days of electricity and gas rates..."):
-    df_elec = fetch_unit_rates(product_code, elec_tariff_code, "electricity", period_from)
-    df_gas = fetch_unit_rates(product_code, gas_tariff_code, "gas", period_from)
+    # Pass individual product codes for electricity and gas
+    df_elec = fetch_unit_rates(elec_product_code, elec_tariff_code, "electricity", period_from)
+    df_gas = fetch_unit_rates(gas_product_code, gas_tariff_code, "gas", period_from)
 
 df_usage = pd.DataFrame()
 if api_key and mpan and serial_number:
